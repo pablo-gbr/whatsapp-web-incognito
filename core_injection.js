@@ -1,5 +1,13 @@
 
-injectScripts();
+const WAdebugEnabled = true;
+
+function WAIncognitoDebug(stage, details)
+{
+	if (WAdebugEnabled) console.info("[WAIncognito debug][extension]", stage, details ?? "");
+}
+
+WAIncognitoDebug("injection started", { readyState: document.readyState });
+injectScripts().catch(error => WAIncognitoDebug("injection stopped", error.message));
 
 async function injectScripts() 
 {
@@ -23,10 +31,11 @@ async function injectScripts()
 	await injectScript('core/multi_device.js');
 	await injectScript('core/node_handler.js');
 	await injectScript('core/interception.js');
+	WAIncognitoDebug("required interception scripts loaded");
 
 	setTimeout(
 		function() {
-			injectScript('lib/moduleraid.js');
+			injectScript('lib/moduleraid.js').catch(error => WAIncognitoDebug("moduleRaid injection stopped", error.message));
 		},
 		10);
 }
@@ -35,13 +44,22 @@ function injectScript(scriptName)
 {
 	return new Promise(function(resolve, reject) {
 		var s = document.createElement('script');
+		const start = performance.now();
+		WAIncognitoDebug("injecting script", scriptName);
+		if (WAdebugEnabled && scriptName === "core/ws_hook.js")
+			s.setAttribute("data-wa-incognito-debug", "");
 		s.src = chrome.runtime.getURL(scriptName);
 		s.async = false; // execute in insertion order, not in download order
 		s.onload = async function() {
 			if (this.parentNode)
 				this.parentNode.removeChild(this);
 			//await sleep(0.5);
+			WAIncognitoDebug("script loaded", { script: scriptName, ms: Math.round(performance.now() - start) });
 			resolve(true);
+		};
+		s.onerror = function() {
+			s.remove();
+			reject(new Error(scriptName + " failed to load"));
 		};
 		(document.head||document.documentElement).appendChild(s);
 	});

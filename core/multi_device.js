@@ -23,8 +23,19 @@ MultiDevice.initialize = function()
 
     // install our hook in order to discover the Noise keys
     // ("WACryptoDependencies").getCrypto().subtle.importKey
-    window.crypto.subtle.importKey = async function(format, keyData, algorithm, extractable, keyUsages)
+    MultiDevice.importKeyHook = window.crypto.subtle.importKey = async function(format, keyData, algorithm, extractable, keyUsages)
     {
+        globalThis.WAIncognitoDebug?.("crypto importKey called");
+        if (window.WAdebugEnabled && (algorithm === "AES-GCM" || algorithm?.name === "AES-GCM"))
+        {
+            globalThis.WAIncognitoDebug?.("AES-GCM import using " + typeof algorithm, {
+                raw: format === "raw",
+                dataType: keyData?.constructor?.name,
+                byteLength: keyData?.byteLength ?? keyData?.length,
+                extractable: extractable === true,
+                usageCount: keyUsages?.length
+            });
+        }
         if (format == "raw" && algorithm == "AES-GCM" && keyData.length == 32 && extractable == false && keyUsages.length == 1)
         {
             var key = await originalImportKey.apply(window.crypto.subtle, ["raw", new Uint8Array(keyData), algorithm, false, ["decrypt", "encrypt"]]);
@@ -35,6 +46,7 @@ MultiDevice.initialize = function()
                 MultiDevice.writeCounter = 0;
                 MultiDevice.writeKeyImported = key;
                 MultiDevice.writeCounters.push(0);
+                globalThis.WAIncognitoDebug?.("Noise write key available");
                 console.log("WAIncognito: Noise encryption key has been replaced.");
             }
             else if (keyUsages.includes("decrypt"))
@@ -43,6 +55,7 @@ MultiDevice.initialize = function()
                 MultiDevice.readKeyImported = key;
                 MultiDevice.readCounter = 0;
                 MultiDevice.readCounters.push(0);
+                globalThis.WAIncognitoDebug?.("Noise read key available");
                 console.log("WAIncognito: Noise decryption key has been replaced.");
             }
         }
@@ -66,6 +79,7 @@ MultiDevice.initialize = function()
 
         return originalImportKey.call(window.crypto.subtle, format, keyData, algorithm, extractable, keyUsages);
     };
+    globalThis.WAIncognitoDebug?.("crypto importKey hook installed");
 };
 
 MultiDevice.decryptNoisePacket = async function(payload, isIncoming = true)
@@ -74,7 +88,12 @@ MultiDevice.decryptNoisePacket = async function(payload, isIncoming = true)
     var looksLikeHandshakePacket = MultiDevice.looksLikeHandshakePacket(payload);
     
     await MultiDevice.waitForNoiseKeyIfNeeded(looksLikeHandshakePacket);
-    if (looksLikeHandshakePacket || MultiDevice.readKey == null) return null;
+    if (looksLikeHandshakePacket || MultiDevice.readKey == null)
+    {
+        const direction = isIncoming ? "incoming" : "outgoing";
+        globalThis.WAIncognitoDebug?.(direction + (looksLikeHandshakePacket ? " Noise handshake frame" : " frame skipped without Noise key"));
+        return null;
+    }
 
     // split to frames
     // WAFrameSocket.convertBufferedToFrames
@@ -713,16 +732,21 @@ MultiDevice.waitForNoiseKeyIfNeeded = async function(looksLikeHandshakePacket)
 {
     if (!looksLikeHandshakePacket && MultiDevice.readKey == null)
     {
+        globalThis.WAIncognitoDebug?.("waiting for Noise read key");
         console.log("WAIncognito: Waiting for the noise key to arrive");
         //debugger;
         await sleep(2000);
 
         if (MultiDevice.readKey == null)
         {
+            globalThis.WAIncognitoDebug?.("Noise read key wait timed out", {
+                previousReadKeyAvailable: Boolean(MultiDevice.prevReadKey),
+                previousWriteKeyAvailable: Boolean(MultiDevice.prevWriteKey)
+            });
             console.warn("Warning: The Noise key did not arrive despite waiting. Interception might not work.");
             console.warn("window.crypto.subtle.importKey:")
             console.warn(window.crypto.subtle.importKey);
-            WAdebugMode = true;
+            if (!window.WAdebugEnabled) WAdebugMode = true;
 
             console.warn("WAIcognito: Trying to use previous keys");
             MultiDevice.readKey = MultiDevice.prevReadKey;

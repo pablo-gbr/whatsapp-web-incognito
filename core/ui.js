@@ -19,6 +19,7 @@ initialize();
 
 function initialize()
 {
+    globalThis.WAIncognitoDebug?.("UI script initialized", { appPresent: Boolean(document.querySelector(".two")) });
     // load saved settings
     browser.runtime.sendMessage({ name: "getOptions" }, function (options)
     {
@@ -126,9 +127,10 @@ function onMutationsObserved(mutations)
 
 function onMainUIReady()
 {
+    globalThis.WAIncognitoDebug?.("UI dispatching onMainUIReady");
     document.dispatchEvent(new CustomEvent('onMainUIReady', {}));
 
-    setTimeout(checkInterception, 1000);
+    setTimeout(() => checkInterception("startup"), 1000);
 
     // if the menu item is gone somehow after a short period of time (e.g because the layout changes from right-to-left) add it again
     // TODO: a race can make the icon added twice
@@ -433,6 +435,7 @@ document.addEventListener('onInterceptionWorking', function (e)
 {
     var data = JSON.parse(e.detail);
     isInterceptionWorking = data.isInterceptionWorking;
+    globalThis.WAIncognitoDebug?.("UI received interception status", isInterceptionWorking);
 
     // populate pseudoMsgsIDs
     var deletedDBOpenRequest = indexedDB.open("deletedMsgs", 1);
@@ -1123,10 +1126,12 @@ function isSafetyDelayValid(string)
     return (String(number) === string && number >= 1 && number <= 30) || string == ""
 }
 
-function checkInterception()
+function checkInterception(source = "options menu")
 {
+    globalThis.WAIncognitoDebug?.("UI checking interception", { source, isInterceptionWorking });
     if (!isInterceptionWorking)
     {
+        document.dispatchEvent(new CustomEvent("onInterceptionDebugSnapshot"));
         Swal.fire({
             title: "Oops...",
             html: "WhatsApp Web Incognito has detected that interception is not working. \

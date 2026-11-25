@@ -86,6 +86,7 @@
 		disabled: !!window.__waIncognitoSkipCommsWorkerFix
 	};
 	window.WAIncognitoCommsModeFix = report;
+	globalThis.WAIncognitoDebug?.("comms-worker check started", { disabled: report.disabled });
 
 	if (report.disabled)
 	{
@@ -119,6 +120,9 @@
 		report.patched = true;
 		report.method = method;
 		report.patchedAt = Date.now();
+		globalThis.WAIncognitoDebug?.("comms-worker gate patched", {
+			method, originallyInWorker: report.originalValueAtPatch
+		});
 
 		console.log("WAIncognito: comms are forced to the main thread " +
 			"(WAWebCommsGating.isCommsInWorker -> false, method: " + method + ").");
@@ -127,7 +131,14 @@
 	function tryPatchExports(exports, method)
 	{
 		if (report.patched) return true;
-		if (!isCommsGatingExports(exports)) return false;
+		if (!isCommsGatingExports(exports))
+		{
+			if (method === "direct-require")
+				globalThis.WAIncognitoDebug?.("comms-worker gate did not match expected export", {
+					functionFound: typeof exports?.isCommsInWorker === "function"
+				});
+			return false;
+		}
 
 		markPatched(method, exports);
 		return true;
@@ -153,22 +164,24 @@
 					if (typeof previous === "function")
 						previous(module);
 				}
-				catch (e) { }
+				catch (e) { globalThis.WAIncognitoDebug?.("previous module factory callback failed", e?.name); }
 
 				try
 				{
 					if (module)
 						tryPatchExports(module.exports, "module-factory-hook");
 				}
-				catch (e) { }
+				catch (e) { globalThis.WAIncognitoDebug?.("comms-worker factory patch failed", e?.name); }
 			};
 
 			window.__waIncognitoFactoryHookInstalled = true;
 			report.factoryHookInstalled = true;
+			globalThis.WAIncognitoDebug?.("comms-worker module factory hook installed");
 			return true;
 		}
 		catch (e)
 		{
+			globalThis.WAIncognitoDebug?.("comms-worker module factory hook failed", e?.name);
 			return false;
 		}
 	}
@@ -183,6 +196,7 @@
 				return false;
 
 			report.requireSeen = true;
+			globalThis.WAIncognitoDebug?.("WhatsApp require available");
 
 			// Requiring a registered module is cheap and returns the cached
 			// exports. Before the module is registered, require() throws and we
@@ -192,6 +206,7 @@
 		}
 		catch (e)
 		{
+			globalThis.WAIncognitoDebug?.("comms-worker gate unavailable through require", e?.name);
 			return false;
 		}
 	}
@@ -219,6 +234,9 @@
 		tryDirectRequire();
 
 		if (report.patched || attempts >= MAX_ATTEMPTS)
+		{
 			clearInterval(timer);
+			if (!report.patched) globalThis.WAIncognitoDebug?.("comms-worker patch timed out", { attempts });
+		}
 	}, 50);
 })();

@@ -4,6 +4,7 @@
 
 document.addEventListener('onMainUIReady', function (e)
 {
+    globalThis.WAIncognitoDebug?.("page received onMainUIReady");
     setTimeout(exposeWhatsAppAPI, 100);
 });
 

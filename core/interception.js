@@ -33,16 +33,27 @@ initialize();
 wsHook.before = function (originalData, url)
 {
     var promise = async function(originalData) {
+    globalThis.WAIncognitoDebug?.("outgoing interception callback entered");
+    let debugStage = "decrypt";
 
-    if (WAPassthrough) return originalData;
+    if (WAPassthrough)
+    {
+        globalThis.WAIncognitoDebug?.("outgoing passthrough enabled");
+        return originalData;
+    }
 
     try
     {
-        if (!(originalData instanceof ArrayBuffer || originalData instanceof Uint8Array)) return originalData;
+        if (!(originalData instanceof ArrayBuffer || originalData instanceof Uint8Array))
+        {
+            globalThis.WAIncognitoDebug?.("outgoing data is not an ArrayBuffer or Uint8Array", originalData?.constructor?.name);
+            return originalData;
+        }
 
         // encrytped binary payload
         var decryptedFrames = await MultiDevice.decryptNoisePacket(originalData, isIncoming=false);
         if (decryptedFrames == null) return originalData;
+        globalThis.WAIncognitoDebug?.("outgoing packet decrypted", { frames: decryptedFrames.length });
 
         for (var i = 0; i < decryptedFrames.length; i++)
         {
@@ -51,23 +62,34 @@ wsHook.before = function (originalData, url)
             var decryptedFrameOriginal = decryptedFrameInfo.frameUncompressed;
             var counter = decryptedFrameInfo.counter;
 
+            debugStage = "decode stanza";
             var realNode = await nodeReaderWriter.decodeStanza(decryptedFrameOriginal, gzipInflate);
+            globalThis.WAIncognitoDebug?.("outgoing stanza decoded");
             
+            debugStage = "node handler";
             var [isAllowed, manipulatedNode] = await NodeHandler.interceptOutgoingNode(realNode);
             decryptedFrames[i] = {node: manipulatedNode, counter: counter};
 
             if (WAdebugMode || WAPassthroughWithDebug)
             {
                 printNode(manipulatedNode, isIncoming=false, decryptedFrame.byteLength);
-                if (WAPassthroughWithDebug) return originalData;
+                if (WAPassthroughWithDebug)
+                {
+                    globalThis.WAIncognitoDebug?.("outgoing debug passthrough enabled");
+                    return originalData;
+                }
             }
 
             // sanity check that our node parsing is complete
+            debugStage = "encoder check";
             await checkNodeEncoderSanity(decryptedFrameOriginal, isIncoming = false);
         }
 
+        debugStage = "repack encrypted packet";
         var packedNode = await MultiDevice.encryptAndPackNodesForSending(decryptedFrames, isIncoming=false);
+        globalThis.WAIncognitoDebug?.("outgoing packet repacked");
 
+        debugStage = "verify repacked packet";
         var looksEqual = isEqualArray(new Uint8Array(originalData), new Uint8Array(packedNode));
         if (!looksEqual && isAllowed)
         {
@@ -78,6 +100,7 @@ wsHook.before = function (originalData, url)
         {
             isInitializing = false;
             console.log("WhatsIncognito: Interception is working.");
+            globalThis.WAIncognitoDebug?.("page dispatching onInterceptionWorking");
             document.dispatchEvent(new CustomEvent('onInterceptionWorking', { detail: JSON.stringify({isInterceptionWorking: true}) }));
         }
 
@@ -85,6 +108,8 @@ wsHook.before = function (originalData, url)
     }
     catch (exception)
     {
+        globalThis.WAIncognitoDebug?.("outgoing fallback at " + debugStage,
+            typeof exception === "string" && exception.includes("counter") ? "Noise counter mismatch" : exception?.name ?? typeof exception);
         if (typeof(exception) == "string" && exception.includes("counter"))
         {
             console.log(exception);
@@ -109,17 +134,28 @@ wsHook.before = function (originalData, url)
 wsHook.after = function (messageEvent, url)
 {
     var promise = async function(messageEvent) {
+    globalThis.WAIncognitoDebug?.("incoming interception callback entered");
+    let debugStage = "decrypt";
     
-    if (WAPassthrough) return messageEvent;
+    if (WAPassthrough)
+    {
+        globalThis.WAIncognitoDebug?.("incoming passthrough enabled");
+        return messageEvent;
+    }
 
     try
     {
         var originalData = messageEvent.data;
 
-        if (!(originalData instanceof ArrayBuffer || originalData instanceof Uint8Array)) return messageEvent;
+        if (!(originalData instanceof ArrayBuffer || originalData instanceof Uint8Array))
+        {
+            globalThis.WAIncognitoDebug?.("incoming data is not an ArrayBuffer or Uint8Array", originalData?.constructor?.name);
+            return messageEvent;
+        }
 
         var decryptedFrames = await MultiDevice.decryptNoisePacket(originalData, isIncoming=true);
         if (decryptedFrames == null) return messageEvent;
+        globalThis.WAIncognitoDebug?.("incoming packet decrypted", { frames: decryptedFrames.length });
 
         var didBlockNode = false;
         for (var i = 0; i < decryptedFrames.length; i++)
@@ -129,18 +165,26 @@ wsHook.after = function (messageEvent, url)
             var decryptedFrameOriginal = decryptedFrameInfo.frameUncompressed;
             var counter = decryptedFrameInfo.counter;
 
+            debugStage = "decode stanza";
             var realNode = await nodeReaderWriter.decodeStanza(decryptedFrameOriginal, gzipInflate);
+            globalThis.WAIncognitoDebug?.("incoming stanza decoded");
             
             if (WAdebugMode || WAPassthroughWithDebug)
             {
                 printNode(realNode, isIncoming=true, decryptedFrame.byteLength);
                 
-                if (WAPassthroughWithDebug) return messageEvent;
+                if (WAPassthroughWithDebug)
+                {
+                    globalThis.WAIncognitoDebug?.("incoming debug passthrough enabled");
+                    return messageEvent;
+                }
             }
 
             // sanity check that our node parsing is deterministic
+            debugStage = "encoder check";
             await checkNodeEncoderSanity(decryptedFrameOriginal, isIncoming = true);
 
+            debugStage = "node handler";
             var [isAllowed, manipulatedNode] = await NodeHandler.interceptReceivedNode(realNode);
 
             if (!isAllowed)
@@ -151,7 +195,9 @@ wsHook.after = function (messageEvent, url)
             decryptedFrames[i] = {node: manipulatedNode, counter: counter, decryptedFrame: decryptedFrame};
         }
 
+        debugStage = "repack encrypted packet";
         var packet = await MultiDevice.encryptAndPackNodesForSending(decryptedFrames, true);
+        globalThis.WAIncognitoDebug?.("incoming packet repacked");
         if (didBlockNode) messageEvent.data = packet;
 
         // TODO: compare the original `data` with `packet`
@@ -160,6 +206,8 @@ wsHook.after = function (messageEvent, url)
     }
     catch (exception)
     {
+        globalThis.WAIncognitoDebug?.("incoming fallback at " + debugStage,
+            typeof exception === "string" && exception.includes("counter") ? "Noise counter mismatch" : exception?.name ?? typeof exception);
         if (exception.message && exception.message.includes("stream end")) return messageEvent;
         if (typeof(exception) == "string" && exception.includes("counter"))
         {
@@ -179,6 +227,8 @@ wsHook.after = function (messageEvent, url)
 
     return MultiDevice.enqueuePromise(promise, messageEvent, true);
 }
+
+globalThis.WAIncognitoDebug?.("incoming and outgoing interception callbacks installed");
 
 //
 // Message restore feauture
@@ -497,19 +547,30 @@ function printNode(node, isIncoming = false, decryptedFrameLength)
 
 function exposeWhatsAppAPI()
 {
+    function resolveModule(name)
+    {
+        globalThis.WAIncognitoDebug?.("WhatsApp API resolving " + name);
+        return require(name);
+    }
+
     window.WhatsAppAPI = {};
 
     // React Native
-    window.WhatsAppAPI.downloadManager = require("WAWebDownloadManager").downloadManager;
-    window.WhatsAppAPI.ChatCollection = require("WAWebChatCollection").ChatCollection;
-    window.WhatsAppAPI.Seen = require("WAWebUpdateUnreadChatAction");
-    window.WhatsAppAPI.Communication = require("WAComms").getComms();
-    window.WhatsAppAPI.LoadEarlierMessages = require("WAWebChatLoadMessages");
-    window.WhatsAppAPI.sendPresenceStatusProtocol = require("WASendPresenceStatusProtocol").sendPresenceStatusProtocol;
-    window.WhatsAppAPI.SignalStore = require("WAWebSignalProtocolStore");
-    window.WhatsAppAPI.WAWebSignalCommonUtils = require("WAWebSignalCommonUtils");
-    window.WhatsAppAPI.WAWebWidFactory = require("WAWebWidFactory");
-    window.WhatsAppAPI.WAWebWidToJid = require("WAWebWidToJid");
+    window.WhatsAppAPI.downloadManager = resolveModule("WAWebDownloadManager").downloadManager;
+    window.WhatsAppAPI.ChatCollection = resolveModule("WAWebChatCollection").ChatCollection;
+    window.WhatsAppAPI.Seen = resolveModule("WAWebUpdateUnreadChatAction");
+    window.WhatsAppAPI.Communication = resolveModule("WAComms").getComms();
+    window.WhatsAppAPI.LoadEarlierMessages = resolveModule("WAWebChatLoadMessages");
+    window.WhatsAppAPI.sendPresenceStatusProtocol = resolveModule("WASendPresenceStatusProtocol").sendPresenceStatusProtocol;
+    window.WhatsAppAPI.SignalStore = resolveModule("WAWebSignalProtocolStore");
+    window.WhatsAppAPI.WAWebSignalCommonUtils = resolveModule("WAWebSignalCommonUtils");
+    window.WhatsAppAPI.WAWebWidFactory = resolveModule("WAWebWidFactory");
+    window.WhatsAppAPI.WAWebWidToJid = resolveModule("WAWebWidToJid");
+    globalThis.WAIncognitoDebug?.("WhatsApp API setup completed", {
+        chatCollection: Boolean(window.WhatsAppAPI.ChatCollection),
+        sendSeen: typeof window.WhatsAppAPI.Seen?.sendSeen === "function",
+        communication: Boolean(window.WhatsAppAPI.Communication)
+    });
 
     if (window.WhatsAppAPI.Seen == undefined)
     {
@@ -519,6 +580,11 @@ function exposeWhatsAppAPI()
 
 function initialize()
 {
+    globalThis.WAIncognitoDebug?.("interception script initializing", {
+        multiDevice: typeof MultiDevice !== "undefined",
+        nodeHandler: typeof NodeHandler !== "undefined",
+        indexedDB: typeof indexedDB !== "undefined"
+    });
     if (WALogs)
         hookLogs();
     initializeDeletedMessagesDB();

@@ -2,6 +2,16 @@
 // based on https://github.com/skepticfx/wshook
 
 var wsHook = {};
+var WAdebugEnabled = document.currentScript?.hasAttribute("data-wa-incognito-debug") === true;
+const waInterceptionStages = Object.create(null);
+
+function WAIncognitoDebug(stage, details)
+{
+	if (!WAdebugEnabled) return;
+	waInterceptionStages[stage] = (waInterceptionStages[stage] ?? 0) + 1;
+	if (waInterceptionStages[stage] === 1)
+		console.info("[WAIncognito debug][page]", stage, details ?? "");
+}
 
 (function() 
 {
@@ -22,8 +32,9 @@ var wsHook = {};
 	var _WS = WebSocket; // save the original constructor
 
 	// hook it
-	WebSocket = function(url, protocols) 
+	const hookedWebSocket = WebSocket = function(url, protocols)
 	{
+		WAIncognitoDebug("WebSocket constructed");
 		var WSObject;
 		this.url = url;
 		this.protocols = protocols;
@@ -32,10 +43,21 @@ var wsHook = {};
 		else
 		WSObject = new _WS(url, protocols);
 
+		if (WAdebugEnabled)
+		{
+			WSObject.addEventListener("open", () => WAIncognitoDebug("WebSocket opened"));
+			WSObject.addEventListener("error", () => WAIncognitoDebug("WebSocket error event"));
+			WSObject.addEventListener("close", event => WAIncognitoDebug("WebSocket closed", {
+				code: event.code, clean: event.wasClean
+			}));
+		}
+
 		var _send = WSObject.send;
 		var _wsobject = this;
 		wsHook._send = WSObject.send = function(data) 
 		{
+			WAIncognitoDebug("WebSocket send");
+			if (wsHook.before === before) WAIncognitoDebug("send before interception callback installed");
 			//data = wsHook.before(data, WSObject.url) || data;
 			new wsHook.before(data, WSObject.url).then(function (newData)
 			{
@@ -54,16 +76,20 @@ var wsHook = {};
 		var onmessageFunction;
 		WSObject.__defineSetter__('onmessage', function(func) 
 		{
+			if (typeof func === "function") WAIncognitoDebug("WebSocket onmessage registered");
 			onmessageFunction = wsHook.onMessage = func;
 		});
 		WSObject.addEventListener('message', function(event) 
 		{
+			WAIncognitoDebug("WebSocket message received");
 			if (!onmessageFunction)
 			{
+				WAIncognitoDebug("message without onmessage handler");
 				console.log("warning: no onmessageFunction");
 				return;
 			}
 		
+			if (wsHook.after === after) WAIncognitoDebug("receive before interception callback installed");
 			wsHook.after(new MutableMessageEvent(event), this.url).then(function(modifiedEvent)
 			{
 				if (modifiedEvent != null)
@@ -79,6 +105,34 @@ var wsHook = {};
 		});
 
 		return WSObject;
+	};
+	WAIncognitoDebug("WebSocket hook installed");
+
+	window.WAIncognitoInterceptionReport = function()
+	{
+		const noise = window.MultiDevice;
+		return {
+			enabled: WAdebugEnabled,
+			webSocketHookActive: WebSocket === hookedWebSocket,
+			outgoingHandlerInstalled: wsHook.before !== before,
+			incomingHandlerInstalled: wsHook.after !== after,
+			keyImportHookActive: Boolean(noise?.importKeyHook && crypto.subtle.importKey === noise.importKeyHook),
+			readKeyAvailable: Boolean(noise?.readKey),
+			writeKeyAvailable: Boolean(noise?.writeKey),
+			incomingQueueSize: noise?.incomingQueue?.queue.length ?? null,
+			outgoingQueueSize: noise?.outgoingQueue?.queue.length ?? null,
+			commsWorker: window.WAIncognitoCommsModeFix ? { ...window.WAIncognitoCommsModeFix } : null,
+			stages: { ...waInterceptionStages }
+		};
+	};
+	if (WAdebugEnabled)
+	{
+		const logReport = reason =>
+		{
+			if (WAdebugEnabled) console.info("[WAIncognito debug][page]", reason, window.WAIncognitoInterceptionReport());
+		};
+		document.addEventListener("onInterceptionDebugSnapshot", () => logReport("snapshot at UI warning"));
+		setTimeout(() => logReport("snapshot 10 seconds after WebSocket hook"), 10000);
 	}
 })();
 
